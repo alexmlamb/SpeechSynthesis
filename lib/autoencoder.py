@@ -3,6 +3,7 @@ import lasagne
 import numpy as np
 import theano
 import theano.tensor as T
+from lasagne.layers import DenseLayer
 
 def init_params(config):
     params = {}
@@ -37,34 +38,49 @@ Maps from a given x to an h_value.
 
 
 '''
-def encoder(x, params):
-    pass
+#def encoder(x, params):
+#    pass
 
 '''
 Maps from a given z to a decoded x.  
 
 '''
-def decoder(z, params):
-    pass
+#def decoder(z, params):
+#    pass
 
 '''
 Given x (uunormalized), returns a reconstructed_x and a sampled x (both unnormalized)
 '''
 
 def define_network(x, params):
-    pass
 
+        h_out_1 = DenseLayer((mb_size, num_hidden), num_units = num_hidden, nonlinearity=lasagne.nonlinearities.rectify)
+
+    results_map = {'reconstruction' : reconstruction}
+
+def compute_loss(x, x_reconstructed):
+    return T.mean(T.sqr((x - x_reconstructed)))
 
 if __name__ == "__main__":
-
 
     params = init_params({})
 
     x = T.matrix()
 
-    res = define_network(x, params)
+    results_map = define_network(x, params)
 
-    #estimate z_sampled, z_reconstruction
+    x_reconstructed = results_map['reconstruction']
+
+    loss = compute_loss(x_reconstructed, x)
+
+    inputs = [x]
+
+    outputs = {'loss' : loss, 'reconstruction' : reconstruction}
+
+    generator_gan_updates = lasagne.updates.adam(loss, params, learning_rate = 0.0001)
+
+    train_method = theano.function(inputs = inputs, outputs = outputs, updates = updates)
+
 
 
 
