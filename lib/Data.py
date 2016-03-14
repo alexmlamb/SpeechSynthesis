@@ -54,7 +54,9 @@ class Data:
         return np.vstack(exampleLst)
 
     def saveExampleWav(self, x_gen, name):
-        pass
+        assert x_gen.ndim == 1
+        wave.write("plots/" + name + ".wav", 1000, x_gen)
+
 
     def saveExample(self, x_gen, name):
 
@@ -63,6 +65,8 @@ class Data:
         plt.plot(x_gen)
 
         imgLoc = "plots/" + name + ".png"
+
+        plt.ylim(-6000,6000)
 
         plt.savefig(imgLoc)
         
