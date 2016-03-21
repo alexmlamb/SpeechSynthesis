@@ -8,7 +8,7 @@ from lasagne.layers import DenseLayer
 def init_params(config):
     params = {}
 
-    scale = 0.1
+    scale = 0.01
     num_latent = 128
 
     num_hidden = config['num_hidden']
@@ -80,7 +80,7 @@ def discriminator(x_real, x_generated, params, mb_size, num_hidden):
 
     accuracy = T.mean(T.eq(target, T.gt(classification, 0.5).flatten()))
 
-    results = {'loss' : loss, 'accuracy' : accuracy}
+    results = {'loss' : T.mean(loss), 'accuracy' : accuracy, 'c' : classification}
 
     return results
 
@@ -134,8 +134,10 @@ if __name__ == "__main__":
 
     d = Data(mb_size = config['mb_size'], seq_length = 4000)
 
+    #todo make sure disc is only updating on disc_params.  
 
     params = init_params(config)
+    params_disc = init_params_disc(config)
 
     x = T.matrix()
 
@@ -143,14 +145,17 @@ if __name__ == "__main__":
 
     x_reconstructed = results_map['reconstruction']
 
-    loss = compute_loss(normalize(x_reconstructed), normalize(x))
+    disc_results = discriminator(normalize(x), x_reconstructed, params, mb_size = config['mb_size'], num_hidden = config['num_hidden'])
+
+
+    loss = compute_loss(normalize(x_reconstructed), normalize(x)) + disc_results['loss']
 
     inputs = [x]
 
-    outputs = {'loss' : loss, 'reconstruction' : x_reconstructed}
-
+    outputs = {'loss' : loss, 'reconstruction' : x_reconstructed, 'accuracy' : disc_results['accuracy'], 'classification' : disc_results['c']}
 
     updates = lasagne.updates.adam(loss, params.values(), learning_rate = 0.001)
+    updates_disc = lasagne.updates.adam(disc_results['loss'], params_disc.values(), learning_rate = 0.001)
 
     train_method = theano.function(inputs = inputs, outputs = outputs, updates = updates)
 
@@ -171,20 +176,10 @@ if __name__ == "__main__":
             print "==========================================================="
             print ""
 
-            print "recon - true", np.mean(np.absolute(recon - true))
-
-            print "var(recon), var(true)", np.std(recon), np.std(true)
-
-            print "mean(recon), mean(true)", np.mean(recon), np.mean(true)
-
-            print "sqr(recon) - sqr(true)", np.mean(np.absolute(np.square(recon) - np.square(true)))
-
             print "update", i, "loss", res['loss']
 
-
-
-
-
+            print "accuracy d", res['accuracy']
+            print "class", res['classification']
 
 
 
