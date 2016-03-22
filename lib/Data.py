@@ -57,7 +57,6 @@ class Data:
         assert x_gen.ndim == 1
         wave.write("plots/" + name + ".wav", 1000, x_gen)
 
-
     def saveExample(self, x_gen, name):
 
         assert x_gen.ndim == 1

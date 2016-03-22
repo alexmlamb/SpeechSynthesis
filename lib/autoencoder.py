@@ -8,7 +8,7 @@ from lasagne.layers import DenseLayer
 def init_params(config):
     params = {}
 
-    scale = 0.01
+    scale = 0.1
     num_latent = 128
 
     num_hidden = config['num_hidden']
@@ -33,6 +33,15 @@ def init_params(config):
     params['b_dec_2'] = theano.shared(0.0 * np.random.normal(size = (num_hidden)).astype('float32'))
     params['b_dec_3'] = theano.shared(0.0 * np.random.normal(size = (4000)).astype('float32'))
 
+    return params
+
+def init_params_disc(config):
+
+    params = {}
+
+    scale = 0.05
+    num_hidden = config['num_hidden']
+
     params['W_disc_1'] = theano.shared(scale * np.random.normal(size = (4000, num_hidden)).astype('float32'))
     params['W_disc_2'] = theano.shared(scale * np.random.normal(size = (num_hidden, num_hidden)).astype('float32'))
     params['W_disc_3'] = theano.shared(scale * np.random.normal(size = (num_hidden, 1)).astype('float32'))
@@ -40,6 +49,8 @@ def init_params(config):
     params['b_disc_1'] = theano.shared(0.0 * np.random.normal(size = (num_hidden)).astype('float32'))
     params['b_disc_2'] = theano.shared(0.0 * np.random.normal(size = (num_hidden)).astype('float32'))
     params['b_disc_3'] = theano.shared(0.0 * np.random.normal(size = (1)).astype('float32'))
+
+    print "DEFINED ALL DISCRIMINATOR WEIGHTS"
 
     return params
 
@@ -72,7 +83,7 @@ def discriminator(x_real, x_generated, params, mb_size, num_hidden):
     h_out_2_value = h_out_2.get_output_for(h_out_1_value)
     h_out_3_value = h_out_3.get_output_for(h_out_2_value)
 
-    raw_y = h_out_3_value
+    raw_y = T.clip(h_out_3_value, -20.0, 20.0)
 
     classification = T.nnet.sigmoid(raw_y)
 
@@ -145,25 +156,38 @@ if __name__ == "__main__":
 
     x_reconstructed = results_map['reconstruction']
 
-    disc_results = discriminator(normalize(x), x_reconstructed, params, mb_size = config['mb_size'], num_hidden = config['num_hidden'])
+    disc_results = discriminator(normalize(x), normalize(x_reconstructed), params_disc, mb_size = config['mb_size'], num_hidden = config['num_hidden'])
 
-
-    loss = compute_loss(normalize(x_reconstructed), normalize(x)) + disc_results['loss']
+    loss = compute_loss(normalize(x_reconstructed), normalize(x))
 
     inputs = [x]
 
     outputs = {'loss' : loss, 'reconstruction' : x_reconstructed, 'accuracy' : disc_results['accuracy'], 'classification' : disc_results['c']}
 
-    updates = lasagne.updates.adam(loss, params.values(), learning_rate = 0.001)
-    updates_disc = lasagne.updates.adam(disc_results['loss'], params_disc.values(), learning_rate = 0.001)
+    print "params_gen", params.keys()
+    print "params_disc", params_disc.keys()
+
+    updates = lasagne.updates.adam(loss, params.values(), learning_rate = 0.0)
+    updates_disc = lasagne.updates.adam(disc_results['loss'], params_disc.values(), learning_rate = 0.0001, beta1 = 0.5)
+    updates_gen = lasagne.updates.adam(-1.0 * disc_results['loss'], params.values(), learning_rate = 0.001, beta1 = 0.5)
 
     train_method = theano.function(inputs = inputs, outputs = outputs, updates = updates)
+    disc_method = theano.function(inputs = inputs, outputs = outputs, updates = updates_disc)
+    gen_method = theano.function(inputs = inputs, outputs = outputs, updates = updates_gen)
+
+    last_acc = 0.0
 
     for i in range(0,100000):
         x = d.getBatch()
         res = train_method(x)
+        if last_acc < 0.8:
+            disc_method(x)
+        if last_acc > 0.5:
+            gen_method(x)
 
-        if i % 20 == 1:
+        last_acc = res['accuracy']
+
+        if i % 100 == 1:
             d.saveExample(res['reconstruction'][0][:200], "image_reconstruction")
             d.saveExample(x[0][:200], "image_original")
 
@@ -179,8 +203,6 @@ if __name__ == "__main__":
             print "update", i, "loss", res['loss']
 
             print "accuracy d", res['accuracy']
-            print "class", res['classification']
-
 
 
 
