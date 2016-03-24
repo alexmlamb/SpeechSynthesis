@@ -47,6 +47,9 @@ class Data:
     def digitize(self, x):
         return np.digitize(x, self.bins) + 1
 
+    def dedigitize(self, dig):
+        return np.rint(self.bins[dig - 1]) - 1
+
     def getBatch(self):
         exampleLst = []
         for j in range(0, self.mb_size):
@@ -72,12 +75,14 @@ class Data:
         plt.clf()
 
 if __name__ == "__main__":
-    d = Data(mb_size = 128, seq_length = 4000)
+    d = Data(mb_size = 2, seq_length = 10)
 
     x = d.getBatch()
 
-    print x.shape
+    print "original", x.tolist()
+    print "new", d.digitize(x).tolist()
+    print "recon", d.dedigitize(d.digitize(x)).tolist()
 
-
+    print "diff", np.sum(np.square(d.dedigitize(d.digitize(x)) - x))
 
 
