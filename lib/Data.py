@@ -74,6 +74,7 @@ class Data:
         
         plt.clf()
 
+
 if __name__ == "__main__":
     d = Data(mb_size = 2, seq_length = 10)
 
