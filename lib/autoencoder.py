@@ -25,7 +25,7 @@ def init_params(config):
     params["z_std_W"] = theano.shared(scale * np.random.normal(size = (num_hidden, num_latent)).astype('float32'))
     params["z_std_b"] = theano.shared(0.0 * np.random.normal(size = (num_latent)).astype('float32'))
 
-    params['W_dec_1'] = theano.shared(scale * np.random.normal(size = (num_latent, 2048)).astype('float32'))
+    params['W_dec_1'] = theano.shared(scale * np.random.normal(size = (num_latent, num_hidden)).astype('float32'))
     params['W_dec_2'] = theano.shared(scale * np.random.normal(size = (num_hidden, num_hidden)).astype('float32'))
     params['W_dec_3'] = theano.shared(scale * np.random.normal(size = (num_hidden, 4000)).astype('float32'))
 
@@ -102,7 +102,11 @@ Maps from a given x to an h_value.
 
 
 '''
-def encoder(x, params):
+def encoder(x, params, config):
+
+    mb_size = config['mb_size']
+    num_hidden = config['num_hidden']
+
     h_out_1 = DenseLayer((mb_size, num_hidden), num_units = num_hidden, nonlinearity=lasagne.nonlinearities.rectify, W = params['W_enc_1'], b = params['b_enc_1'])
     h_out_2 = DenseLayer((mb_size, num_hidden), num_units = num_hidden, nonlinearity=lasagne.nonlinearities.rectify, W = params['W_enc_2'], b = params['b_enc_2'])
 
@@ -110,42 +114,59 @@ def encoder(x, params):
     h_out_1_value = h_out_1.get_output_for(x)
     h_out_2_value = h_out_2.get_output_for(h_out_1_value)
 
+    return {'h' : h_out_2_value}
 
 '''
 Maps from a given z to a decoded x.  
 
 '''
-def decoder(z, params):
+def decoder(z, params, config):
 
+    mb_size = config['mb_size']
+    num_latent = config['num_latent']
+    num_hidden = config['num_hidden']
 
-    h_out_3 = DenseLayer((mb_size, num_hidden), num_units = num_hidden, nonlinearity=lasagne.nonlinearities.rectify, W = params['W_dec_2'], b = params['b_dec_2'])
-    h_out_4 = DenseLayer((mb_size, 4000), num_units = num_hidden, nonlinearity=None, W = params['W_dec_3'], b = params['b_dec_3'])
+    h_out_1 = DenseLayer((mb_size, num_latent), num_units = num_hidden, nonlinearity=lasagne.nonlinearities.rectify, W = params['W_dec_1'], b = params['b_dec_1'])
+    h_out_2 = DenseLayer((mb_size, num_hidden), num_units = num_hidden, nonlinearity=lasagne.nonlinearities.rectify, W = params['W_dec_2'], b = params['b_dec_2'])
+    h_out_3 = DenseLayer((mb_size, num_hidden), num_units = 4000, nonlinearity=None, W = params['W_dec_3'], b = params['b_dec_3'])
 
+    h_out_1_value = h_out_1.get_output_for(z)
+    h_out_2_value = h_out_2.get_output_for(h_out_1_value)
     h_out_3_value = h_out_3.get_output_for(h_out_2_value)
-    reconstruction = h_out_4.get_output_for(h_out_3_value)
 
-    return {'reconstruction' : reconstruction}
+    return {'h' : h_out_3_value}
 
 '''
-Given x (uunormalized), returns a reconstructed_x and a sampled x (both unnormalized)
+Given x (unormalized), returns a reconstructed_x and a sampled x (both unnormalized)
 '''
 
 def define_network(x, params, config):
 
     num_hidden = config['num_hidden']
     mb_size = config['mb_size']
+    num_latent = config['num_latent']
 
+    enc = encoder(x, params, config)
 
+    mean_layer = DenseLayer((mb_size, num_hidden), num_units = num_latent, nonlinearity=None, W = params['z_mean_W'], b = params['z_mean_b'])
+    std_layer = DenseLayer((mb_size, num_hidden), num_units = num_latent, nonlinearity=None, W = params['z_std_W'], b = params['z_std_b'])
 
+    mean = mean_layer.get_output_for(enc['h'])
+    std = T.exp(std_layer.get_output_for(enc['h']))
 
+    import random as rng
+    srng = theano.tensor.shared_randomstreams.RandomStreams(420)
 
-    h_out_3 = DenseLayer((mb_size, num_hidden), num_units = num_hidden, nonlinearity=lasagne.nonlinearities.rectify, W = params['W_dec_2'], b = params['b_dec_2'])
-    h_out_4 = DenseLayer((mb_size, 4000), num_units = num_hidden, nonlinearity=None, W = params['W_dec_3'], b = params['b_dec_3'])
+    z_sampled = srng.normal(size = mean.shape, avg = 0.0, std = 1.0)
 
-    h_out_3_value = h_out_3.get_output_for(h_out_2_value)
-    reconstruction = h_out_4.get_output_for(h_out_3_value)
+    z_reconstruction = std * z_sampled + mean
 
-    results_map = {'reconstruction' : reconstruction}
+    z_var = std**2
+    z_loss = 0.5 * T.sum(mean**2 + z_var - T.log(z_var) - 1.0)
+
+    dec_reconstruction = decoder(z_reconstruction, params, config)
+
+    results_map = {'reconstruction' : dec_reconstruction['h'], 'z_loss' : z_loss}
 
     return results_map
 
@@ -157,6 +178,7 @@ if __name__ == "__main__":
     config = {}
     config['mb_size'] = 128
     config['num_hidden'] = 4096
+    config['num_latent'] = 128
 
     d = Data(mb_size = config['mb_size'], seq_length = 4000)
 
@@ -176,7 +198,7 @@ if __name__ == "__main__":
 
     disc_results = discriminator(normalize(x), x_reconstructed, params_disc, mb_size = config['mb_size'], num_hidden = config['num_hidden'])
 
-    loss = compute_loss(x_reconstructed, normalize(x))
+    loss = compute_loss(x_reconstructed, normalize(x)) + results_map['z_loss']
 
     inputs = [x]
 
