@@ -5,7 +5,9 @@ import theano
 import theano.tensor as T
 from lasagne.layers import DenseLayer
 
-def init_params(config):
+from consider_constant import consider_constant
+
+def init_params_encoder(config):
     params = {}
 
     scale = 0.01
@@ -25,6 +27,16 @@ def init_params(config):
     params["z_std_W"] = theano.shared(scale * np.random.normal(size = (num_hidden, num_latent)).astype('float32'))
     params["z_std_b"] = theano.shared(0.0 * np.random.normal(size = (num_latent)).astype('float32'))
 
+    return params
+
+def init_params_decoder(config):
+
+    params = {}
+
+    scale = 0.01
+    num_latent = 128
+    num_hidden = config['num_hidden']
+
     params['W_dec_1'] = theano.shared(scale * np.random.normal(size = (num_latent, num_hidden)).astype('float32'))
     params['W_dec_2'] = theano.shared(scale * np.random.normal(size = (num_hidden, num_hidden)).astype('float32'))
     params['W_dec_3'] = theano.shared(scale * np.random.normal(size = (num_hidden, 4000)).astype('float32'))
@@ -41,8 +53,9 @@ def init_params_disc(config):
 
     scale = 0.01
     num_hidden = config['num_hidden']
+    num_latent = config['num_latent']
 
-    params['W_disc_1'] = theano.shared(scale * np.random.normal(size = (4000, num_hidden)).astype('float32'))
+    params['W_disc_1'] = theano.shared(scale * np.random.normal(size = (4000 + num_latent, num_hidden)).astype('float32'))
     params['W_disc_2'] = theano.shared(scale * np.random.normal(size = (num_hidden, num_hidden)).astype('float32'))
     params['W_disc_3'] = theano.shared(scale * np.random.normal(size = (num_hidden, 1)).astype('float32'))
 
@@ -65,21 +78,24 @@ Takes real samples and generated samples.
 
 Two fully connected layers, then a classifier output.  
 
+Takes x_real, x_reconstructed, and z (reconstruction)
+
+Feed both (x_real, z) and (x_reconstructed, z) to the discriminator.  
+
+Run three times: D_real, D_fake, G_fake.  When we run with G_fake, pass in consider_constant(z).  
 
 '''
-def discriminator(x_real, x_generated, params, mb_size, num_hidden):
+def discriminator(x, z, params, mb_size, num_hidden, num_latent):
 
-    x = T.concatenate([x_real, x_generated], axis = 0)
+    x_z = T.concatenate([x,z], axis = 1)
 
-    target = theano.shared(np.asarray([1] * mb_size + [0] * mb_size).astype('int32'))
+    h_out_1 = DenseLayer((mb_size, num_hidden + num_latent), num_units = num_hidden, nonlinearity=lasagne.nonlinearities.rectify, W = params['W_disc_1'], b = params['b_disc_1'])
 
-    h_out_1 = DenseLayer((mb_size * 2, num_hidden), num_units = num_hidden, nonlinearity=lasagne.nonlinearities.rectify, W = params['W_disc_1'], b = params['b_disc_1'])
+    h_out_2 = DenseLayer((mb_size, num_hidden), num_units = num_hidden, nonlinearity=lasagne.nonlinearities.rectify, W = params['W_disc_2'], b = params['b_disc_2'])
 
-    h_out_2 = DenseLayer((mb_size * 2, num_hidden), num_units = num_hidden, nonlinearity=lasagne.nonlinearities.rectify, W = params['W_disc_2'], b = params['b_disc_2'])
+    h_out_3 = DenseLayer((mb_size, 1), num_units = 1, nonlinearity=None, W = params['W_disc_3'], b = params['b_disc_3'])
 
-    h_out_3 = DenseLayer((mb_size * 2, 1), num_units = 1, nonlinearity=None, W = params['W_disc_3'], b = params['b_disc_3'])
-
-    h_out_1_value = h_out_1.get_output_for(x)
+    h_out_1_value = h_out_1.get_output_for(x_z)
     h_out_2_value = h_out_2.get_output_for(h_out_1_value)
     h_out_3_value = h_out_3.get_output_for(h_out_2_value)
 
@@ -87,13 +103,7 @@ def discriminator(x_real, x_generated, params, mb_size, num_hidden):
 
     classification = T.nnet.sigmoid(raw_y)
 
-    loss_generator = T.log(1 + T.exp(-1.0*raw_y.flatten()))
-    loss_discriminator = -1.0 * (target * -1.0 * T.log(1 + T.exp(-1.0*raw_y.flatten())) + (1 - target) * (-raw_y.flatten() - T.log(1 + T.exp(-raw_y.flatten()))))
-
-
-    accuracy = T.mean(T.eq(target, T.gt(classification, 0.5).flatten()))
-
-    results = {'loss_discriminator' : T.mean(loss_discriminator), 'loss_generator' : T.mean(loss_generator), 'accuracy' : accuracy, 'c' : classification}
+    results = {'c' : classification}
 
     return results
 
@@ -112,7 +122,7 @@ def encoder(x, params, config):
 
 
     h_out_1_value = h_out_1.get_output_for(x)
-    h_out_2_value = h_out_2.get_output_for(h_out_1_value)
+    h_out_2_value = h_out_2.get_output_for(h_out_1_value) + h_out_1_value
 
     return {'h' : h_out_2_value}
 
@@ -131,7 +141,7 @@ def decoder(z, params, config):
     h_out_3 = DenseLayer((mb_size, num_hidden), num_units = 4000, nonlinearity=None, W = params['W_dec_3'], b = params['b_dec_3'])
 
     h_out_1_value = h_out_1.get_output_for(z)
-    h_out_2_value = h_out_2.get_output_for(h_out_1_value)
+    h_out_2_value = h_out_2.get_output_for(h_out_1_value) + h_out_1_value
     h_out_3_value = h_out_3.get_output_for(h_out_2_value)
 
     return {'h' : h_out_3_value}
@@ -162,16 +172,26 @@ def define_network(x, params, config):
     z_reconstruction = std * z_sampled + mean
 
     z_var = std**2
-    z_loss = 0.5 * T.sum(mean**2 + z_var - T.log(z_var) - 1.0)
+    z_loss = 0.001 * 0.5 * T.sum(mean**2 + z_var - T.log(z_var) - 1.0)
 
     dec_reconstruction = decoder(z_reconstruction, params, config)
+    dec_sampled = decoder(z_sampled, params, config)
 
-    results_map = {'reconstruction' : dec_reconstruction['h'], 'z_loss' : z_loss}
+    interp_lst = []
+
+    for j in range(0,128):
+        interp_lst.append(z_reconstruction[0] * (j/128.0) + z_reconstruction[-1] * (1 - j / 128.0))
+
+    z_interp = T.concatenate([interp_lst], axis = 1)
+
+    dec_interp = decoder(z_interp, params, config)
+
+    results_map = {'reconstruction' : dec_reconstruction['h'], 'z_loss' : z_loss, 'sample' : dec_sampled['h'], 'interp' : dec_interp['h'], 'z' : z_reconstruction}
 
     return results_map
 
 def compute_loss(x, x_reconstructed):
-    return T.mean(T.sqr((x - x_reconstructed)))# + T.abs_(T.mean(x) - T.mean(x_reconstructed)) + T.mean(T.abs_(T.std(x) - T.std(x_reconstructed)))
+    return 100.0 * T.mean(T.sqr((x - x_reconstructed)))# + T.abs_(T.mean(x) - T.mean(x_reconstructed)) + T.mean(T.abs_(T.std(x) - T.std(x_reconstructed)))
 
 if __name__ == "__main__":
 
@@ -184,10 +204,15 @@ if __name__ == "__main__":
 
     #todo make sure disc is only updating on disc_params.  
 
-    params = init_params(config)
+    params_enc = init_params_encoder(config)
+    params_dec = init_params_decoder(config)
     params_disc = init_params_disc(config)
 
-    for pv in params.values() + params_disc.values():
+    params = {}
+    params.update(params_enc)
+    params.update(params_dec)
+
+    for pv in params_enc.values() + params_disc.values() + params_dec.values():
         print pv.dtype
 
     x = T.matrix()
@@ -195,26 +220,34 @@ if __name__ == "__main__":
     results_map = define_network(normalize(x), params, config)
 
     x_reconstructed = results_map['reconstruction']
+    x_sampled = results_map['sample']
 
-    disc_results = discriminator(normalize(x), x_reconstructed, params_disc, mb_size = config['mb_size'], num_hidden = config['num_hidden'])
+    disc_real_D = discriminator(normalize(x), results_map['z'], params_disc, mb_size = config['mb_size'], num_hidden = config['num_hidden'], num_latent = config['num_latent'])
+    disc_fake_D = discriminator(x_reconstructed, results_map['z'], params_disc, mb_size = config['mb_size'], num_hidden = config['num_hidden'], num_latent = config['num_latent'])
+    disc_fake_G = discriminator(x_reconstructed, consider_constant(results_map['z']), params_disc, mb_size = config['mb_size'], num_hidden = config['num_hidden'], num_latent = config['num_latent'])
 
-    loss = compute_loss(x_reconstructed, normalize(x)) + results_map['z_loss']
+    bce = T.nnet.binary_crossentropy
+    LD_dD = bce(disc_real_D['c'], 0.999 * T.ones(disc_real_D['c'].shape)).mean() + bce(disc_fake_D['c'], 0.001 + T.zeros(disc_fake_D['c'].shape)).mean()
+    LD_dG = bce(disc_fake_G['c'], T.ones(disc_fake_G['c'].shape)).mean()
+
+    vae_loss = results_map['z_loss']
+    rec_loss = compute_loss(x_reconstructed, normalize(x))
+
+    loss = vae_loss + rec_loss
 
     inputs = [x]
 
-    outputs = {'loss' : loss, 'reconstruction' : denormalize(x_reconstructed), 'accuracy' : disc_results['accuracy'], 'classification' : disc_results['c'], 'x' : x}
+    outputs = {'loss' : loss, 'vae_loss' : vae_loss, 'rec_loss' : rec_loss, 'reconstruction' : denormalize(x_reconstructed), 'c_real' : disc_real_D['c'], 'c_fake' : disc_fake_D['c'], 'x' : x, 'sample' : denormalize(x_sampled), 'interp' : denormalize(results_map['interp'])}
 
     print "params_gen", params.keys()
     print "params_disc", params_disc.keys()
 
-    updates = lasagne.updates.adam(loss, params.values(), learning_rate = 0.0001)
-    updates_disc = lasagne.updates.adam(disc_results['loss_discriminator'], params_disc.values(), learning_rate = 0.0001, beta1 = 0.5)
-
-    updates_gen = lasagne.updates.adam(disc_results['loss_generator'], params.values(), learning_rate = 0.0001, beta1 = 0.5)
+    updates = lasagne.updates.adam(vae_loss + LD_dG, params.values(), learning_rate = 0.0001, beta1 = 0.5)
+    updates_disc = lasagne.updates.adam(LD_dD, params_disc.values() + params_enc.values(), learning_rate = 0.00001, beta1 = 0.5)
 
     train_method = theano.function(inputs = inputs, outputs = outputs, updates = updates)
     disc_method = theano.function(inputs = inputs, outputs = outputs, updates = updates_disc)
-    gen_method = theano.function(inputs = inputs, outputs = outputs, updates = updates_gen)
+    #gen_method = theano.function(inputs = inputs, outputs = outputs, updates = updates_gen)
 
     last_acc = 0.0
 
@@ -223,25 +256,28 @@ if __name__ == "__main__":
         res = train_method(x)
         disc_method(x)
 
-        #if last_acc > 0.8:
-        #    gen_method(x)
-
-        last_acc = res['accuracy']
 
         if i % 100 == 1:
             d.saveExample(res['reconstruction'][0][:200], "image_reconstruction")
             d.saveExample(x[0][:200], "image_original")
+            d.saveExample(res['sample'][0][:200],'image_sample')
             d.saveExampleWav(res['reconstruction'][0].astype('int16'), "image_reconstruction_" + str(i))
             d.saveExampleWav(x[0], "image_original_" + str(i))
+            d.saveExampleWav(res['sample'][0].astype('int16'), "image_sample_" + str(i))
+            
+            d.saveExampleWav(res['interp'][[0,20,40,60,80,100,120],:].flatten().astype('int16'), "image_interp_" + str(i))
 
         if i % 20 == 1:
             print "==========================================================="
             print ""
 
             print "update", i, "loss", res['loss']
-
-            print "accuracy d", res['accuracy']
-            print "classification", res['classification'][128:].mean(), res['classification'][:128].mean()
+            print "vae loss", res['vae_loss']
+            print "rec loss", res['rec_loss']
+    
+            print "classification", res['c_real'][:20].tolist()
+            print res['c_fake'][:20].tolist()
+            print "real", res['c_real'].mean(), "fake", res['c_fake'].mean()
             #print res['classification'].tolist()
 
 
