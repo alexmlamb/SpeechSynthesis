@@ -4,6 +4,7 @@ import numpy as np
 import theano
 import theano.tensor as T
 from lasagne.layers import DenseLayer
+from HiddenLayer import HiddenLayer
 
 from consider_constant import consider_constant
 
@@ -57,11 +58,13 @@ def init_params_disc(config):
 
     params['W_disc_1'] = theano.shared(scale * np.random.normal(size = (4000 + num_latent, num_hidden)).astype('float32'))
     params['W_disc_2'] = theano.shared(scale * np.random.normal(size = (num_hidden, num_hidden)).astype('float32'))
-    params['W_disc_3'] = theano.shared(scale * np.random.normal(size = (num_hidden, 1)).astype('float32'))
+    params['W_disc_3'] = theano.shared(scale * np.random.normal(size = (num_hidden, num_hidden)).astype('float32'))
+    params['W_disc_4'] = theano.shared(scale * np.random.normal(size = (num_hidden, 1)).astype('float32'))
 
     params['b_disc_1'] = theano.shared(0.0 * np.random.normal(size = (num_hidden)).astype('float32'))
     params['b_disc_2'] = theano.shared(0.0 * np.random.normal(size = (num_hidden)).astype('float32'))
-    params['b_disc_3'] = theano.shared(0.0 * np.random.normal(size = (1)).astype('float32'))
+    params['b_disc_3'] = theano.shared(0.0 * np.random.normal(size = (num_hidden)).astype('float32'))
+    params['b_disc_4'] = theano.shared(0.0 * np.random.normal(size = (1)).astype('float32'))
 
     print "DEFINED ALL DISCRIMINATOR WEIGHTS"
 
@@ -89,17 +92,30 @@ def discriminator(x, z, params, mb_size, num_hidden, num_latent):
 
     x_z = T.concatenate([x,z], axis = 1)
 
-    h_out_1 = DenseLayer((mb_size, num_hidden + num_latent), num_units = num_hidden, nonlinearity=lasagne.nonlinearities.rectify, W = params['W_disc_1'], b = params['b_disc_1'])
 
-    h_out_2 = DenseLayer((mb_size, num_hidden), num_units = num_hidden, nonlinearity=lasagne.nonlinearities.rectify, W = params['W_disc_2'], b = params['b_disc_2'])
+    h_out_1 = DenseLayer((mb_size, num_hidden + num_latent), num_units = num_hidden, nonlinearity=None, W = params['W_disc_1'])
 
-    h_out_3 = DenseLayer((mb_size, 1), num_units = 1, nonlinearity=None, W = params['W_disc_3'], b = params['b_disc_3'])
+    h_out_2 = DenseLayer((mb_size, num_hidden), num_units = num_hidden, nonlinearity=None, W = params['W_disc_2'])
+
+    h_out_3 = DenseLayer((mb_size, num_hidden), num_units = num_hidden, nonlinearity=None, W = params['W_disc_3'])
+
+    h_out_4 = DenseLayer((mb_size, 1), num_units = 1, nonlinearity=None, W = params['W_disc_4'], b = params['b_disc_4'])
 
     h_out_1_value = h_out_1.get_output_for(x_z)
+
+    h_out_1_value = T.maximum(0.0, (h_out_1_value - T.mean(h_out_1_value, axis = 0)) / (1.0 + T.std(h_out_1_value, axis = 0)) + params['b_disc_1'])
+
     h_out_2_value = h_out_2.get_output_for(h_out_1_value)
+
+    h_out_2_value = T.maximum(0.0, (h_out_2_value - T.mean(h_out_2_value, axis = 0)) / (1.0 + T.std(h_out_2_value, axis = 0)) + params['b_disc_2'])
+
     h_out_3_value = h_out_3.get_output_for(h_out_2_value)
 
-    raw_y = h_out_3_value
+    h_out_3_value = T.maximum(0.0, (h_out_3_value - T.mean(h_out_3_value, axis = 0)) / (1.0 + T.std(h_out_3_value, axis = 0)) + params['b_disc_3'])
+
+    h_out_4_value = h_out_4.get_output_for(h_out_3_value)
+
+    raw_y = h_out_4_value
 
     classification = T.nnet.sigmoid(raw_y)
 
@@ -117,12 +133,12 @@ def encoder(x, params, config):
     mb_size = config['mb_size']
     num_hidden = config['num_hidden']
 
-    h_out_1 = DenseLayer((mb_size, num_hidden), num_units = num_hidden, nonlinearity=lasagne.nonlinearities.rectify, W = params['W_enc_1'], b = params['b_enc_1'])
-    h_out_2 = DenseLayer((mb_size, num_hidden), num_units = num_hidden, nonlinearity=lasagne.nonlinearities.rectify, W = params['W_enc_2'], b = params['b_enc_2'])
+    h_out_1 = HiddenLayer(num_in = 4000, num_out = num_hidden, W = params['W_enc_1'], b = params['b_enc_1'], activation = 'relu', batch_norm = True)
 
+    h_out_2 = HiddenLayer(num_in = num_hidden, num_out = num_hidden, W = params['W_enc_2'], b = params['b_enc_2'], activation = 'relu', batch_norm = True)
 
-    h_out_1_value = h_out_1.get_output_for(x)
-    h_out_2_value = h_out_2.get_output_for(h_out_1_value) + h_out_1_value
+    h_out_1_value = h_out_1.output(x)
+    h_out_2_value = h_out_2.output(h_out_1_value)
 
     return {'h' : h_out_2_value}
 
@@ -136,12 +152,14 @@ def decoder(z, params, config):
     num_latent = config['num_latent']
     num_hidden = config['num_hidden']
 
-    h_out_1 = DenseLayer((mb_size, num_latent), num_units = num_hidden, nonlinearity=lasagne.nonlinearities.rectify, W = params['W_dec_1'], b = params['b_dec_1'])
-    h_out_2 = DenseLayer((mb_size, num_hidden), num_units = num_hidden, nonlinearity=lasagne.nonlinearities.rectify, W = params['W_dec_2'], b = params['b_dec_2'])
+    h_out_1 = HiddenLayer(num_in = num_latent, num_out = num_hidden, W = params['W_dec_1'], b = params['b_dec_1'], activation = 'relu', batch_norm = True)
+
+    h_out_2 = HiddenLayer(num_in = num_hidden, num_out = num_hidden, W = params['W_dec_2'], b = params['b_dec_2'], activation = 'relu', batch_norm = True)
+
     h_out_3 = DenseLayer((mb_size, num_hidden), num_units = 4000, nonlinearity=None, W = params['W_dec_3'], b = params['b_dec_3'])
 
-    h_out_1_value = h_out_1.get_output_for(z)
-    h_out_2_value = h_out_2.get_output_for(h_out_1_value) + h_out_1_value
+    h_out_1_value = h_out_1.output(z)
+    h_out_2_value = h_out_2.output(h_out_1_value)
     h_out_3_value = h_out_3.get_output_for(h_out_2_value)
 
     return {'h' : h_out_3_value}
@@ -239,11 +257,13 @@ if __name__ == "__main__":
 
     outputs = {'loss' : loss, 'vae_loss' : vae_loss, 'rec_loss' : rec_loss, 'reconstruction' : denormalize(x_reconstructed), 'c_real' : disc_real_D['c'], 'c_fake' : disc_fake_D['c'], 'x' : x, 'sample' : denormalize(x_sampled), 'interp' : denormalize(results_map['interp'])}
 
-    print "params_gen", params.keys()
+    print "params", params.keys()
+    print "params enc", params_enc.keys()
+    print "params dec", params_dec.keys()
     print "params_disc", params_disc.keys()
 
-    updates = lasagne.updates.adam(vae_loss + LD_dG, params.values(), learning_rate = 0.0001, beta1 = 0.5)
-    updates_disc = lasagne.updates.adam(LD_dD, params_disc.values() + params_enc.values(), learning_rate = 0.00001, beta1 = 0.5)
+    updates = lasagne.updates.adam(LD_dG, params_dec.values(), learning_rate = 0.0001, beta1 = 0.5)
+    updates_disc = lasagne.updates.adam(LD_dD + vae_loss * 0.001, params_disc.values() + params_enc.values(), learning_rate = 0.00001, beta1 = 0.5)
 
     train_method = theano.function(inputs = inputs, outputs = outputs, updates = updates)
     disc_method = theano.function(inputs = inputs, outputs = outputs, updates = updates_disc)
