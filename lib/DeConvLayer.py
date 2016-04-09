@@ -55,15 +55,8 @@ class DeConvLayer(object):
             raise Exception()
 
 
-        self.params = {'W' : self.W, 'b' : self.b}
-        if self.batch_norm:
-            self.params["mu"] = self.bn_mean
-            self.params["sigma"] = self.bn_std
-
         return out
 
-    def getParams(self):
-        return self.params
 
 
 if __name__ == "__main__":
@@ -72,18 +65,18 @@ if __name__ == "__main__":
 
     u = 20
 
-    W = theano.shared(np.random.normal(size = (1, 1, u * 2 + 1, 1)).astype('float32'))
-    b = theano.shared(np.random.normal(size = (1)).astype('float32'))
+    W = theano.shared(np.random.normal(size = (1, 10, u * 2 + 1, 1)).astype('float32'))
+    b = theano.shared(np.random.normal(size = (10)).astype('float32'))
 
-    dc = DeConvLayer(in_channels = 1, out_channels = 1, activation = None, W = W, b = b, up_rate = u)
+    dc = DeConvLayer(in_channels = 1, out_channels = 10, activation = None, W = W, b = b, up_rate = u)
 
-    x_gen = np.ones(shape = (1, 1, 200, 1)).astype('float32')
+    x_gen = np.ones(shape = (32, 1, 200, 1)).astype('float32')
 
     print "compiling"
 
     f = theano.function([x], dc.output(x))
 
-    val = f(x_gen)[0]
+    val = f(x_gen)
     print val.shape
 
 

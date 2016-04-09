@@ -7,18 +7,28 @@ from lasagne.layers import DenseLayer
 from HiddenLayer import HiddenLayer
 from ConvolutionalLayer import ConvPoolLayer
 import time
+from DeConvLayer import DeConvLayer
 
 from consider_constant import consider_constant
 
 def init_params_encoder(config):
     params = {}
 
-    scale = 0.01
+    scale = 0.05
     num_latent = config['num_latent']
 
     num_hidden = config['num_hidden']
 
-    params["W_enc_1"] = theano.shared(scale * np.random.normal(size = (4000, num_hidden)).astype('float32'))
+    params["Wc_enc_1"] = theano.shared(scale * np.random.normal(size = (128, 1, 20)).astype('float32'))
+    params["bc_enc_1"] = theano.shared(scale * np.random.normal(size = (128)).astype('float32'))
+
+    params["Wc_enc_2"] = theano.shared(scale * np.random.normal(size = (256, 128, 20)).astype('float32'))
+    params["bc_enc_2"] = theano.shared(scale * np.random.normal(size = (256)).astype('float32'))
+
+    params["Wc_enc_3"] = theano.shared(scale * np.random.normal(size = (512, 256, 10)).astype('float32'))
+    params["bc_enc_3"] = theano.shared(scale * np.random.normal(size = (512)).astype('float32'))
+
+    params["W_enc_1"] = theano.shared(scale * np.random.normal(size = (512*6, num_hidden)).astype('float32'))
     params["W_enc_2"] = theano.shared(scale * np.random.normal(size = (num_hidden, num_hidden)).astype('float32'))
 
     params["b_enc_1"] = theano.shared(0.0 * np.random.normal(size = (num_hidden)).astype('float32'))
@@ -36,17 +46,27 @@ def init_params_decoder(config):
 
     params = {}
 
-    scale = 0.01
+    scale = 0.05
     num_latent = config['num_latent']
     num_hidden = config['num_hidden']
 
     params['W_dec_1'] = theano.shared(scale * np.random.normal(size = (num_latent * 2, num_hidden)).astype('float32'))
     params['W_dec_2'] = theano.shared(scale * np.random.normal(size = (num_hidden, num_hidden)).astype('float32'))
-    params['W_dec_3'] = theano.shared(scale * np.random.normal(size = (num_hidden, 4000)).astype('float32'))
+    params['W_dec_3'] = theano.shared(scale * np.random.normal(size = (num_hidden, 4096)).astype('float32'))
 
     params['b_dec_1'] = theano.shared(0.0 * np.random.normal(size = (num_hidden)).astype('float32'))
     params['b_dec_2'] = theano.shared(0.0 * np.random.normal(size = (num_hidden)).astype('float32'))
-    params['b_dec_3'] = theano.shared(0.0 * np.random.normal(size = (4000)).astype('float32'))
+    params['b_dec_3'] = theano.shared(0.0 * np.random.normal(size = (4096)).astype('float32'))
+
+    params['Wc_dec_1'] = theano.shared(scale * np.random.normal(size = (512, 256, 5 * 2 + 1, 1)).astype('float32'))
+    params['bc_dec_1'] = theano.shared(0.0 * np.random.normal(size = (256)).astype('float32'))
+
+    params['Wc_dec_2'] = theano.shared(scale * np.random.normal(size = (256, 128, 10 * 2 + 1, 1)).astype('float32'))
+    params['bc_dec_2'] = theano.shared(0.0 * np.random.normal(size = (128)).astype('float32'))
+
+    params['Wc_dec_3'] = theano.shared(scale * np.random.normal(size = (128, 1, 10 * 2 + 1, 1)).astype('float32'))
+    params['bc_dec_3'] = theano.shared(0.0 * np.random.normal(size = (1)).astype('float32'))
+
 
     return params
 
@@ -54,7 +74,7 @@ def init_params_disc(config):
 
     params = {}
 
-    scale = 0.01
+    scale = 0.05
     num_hidden = config['num_hidden']
     num_latent = config['num_latent']
 
@@ -90,6 +110,12 @@ def normalize(x):
 def denormalize(x):
     return x * 1000.0
 
+import random as rng
+srng = theano.tensor.shared_randomstreams.RandomStreams(420)
+
+def dropout(in_layer, p = 0.5):
+    return in_layer * T.cast(srng.binomial(n=1,p=p,size=in_layer.shape),'float32')
+
 '''
 Takes real samples and generated samples.  
 
@@ -104,23 +130,26 @@ Run three times: D_real, D_fake, G_fake.  When we run with G_fake, pass in consi
 '''
 def discriminator(x, z, params, mb_size, num_hidden, num_latent):
 
-    c_1 = ConvPoolLayer(in_channels = 1, out_channels = 128, in_length = 4000, batch_size = mb_size, kernel_len = 20, stride = 10, activation = "relu", batch_norm = True, W = params['W_c_1'], b = params['b_c_1'])
+    import random as rng
+    srng = theano.tensor.shared_randomstreams.RandomStreams(420)
 
-    c_2 = ConvPoolLayer(in_channels = 128, out_channels = 256, in_length = 399, batch_size = mb_size, kernel_len = 20, stride = 10, activation = "relu", batch_norm = True, W = params['W_c_2'], b = params['b_c_2'])
+    c_1 = ConvPoolLayer(in_channels = 1, out_channels = 128, in_length = 4000, batch_size = mb_size, kernel_len = 20, stride = 10, activation = "relu", batch_norm = False, W = params['W_c_1'], b = params['b_c_1'])
 
-    c_3 = ConvPoolLayer(in_channels = 256, out_channels = 512, in_length = 38, batch_size = mb_size, kernel_len = 10, stride = 5, activation = "relu", batch_norm = True, W = params['W_c_3'], b = params['b_c_3'])
+    c_2 = ConvPoolLayer(in_channels = 128, out_channels = 256, in_length = 399, batch_size = mb_size, kernel_len = 20, stride = 10, activation = "relu", batch_norm = False, W = params['W_c_2'], b = params['b_c_2'])
 
-    c_h_1 = HiddenLayer(num_in = 6 * 512, num_out = num_hidden, W = params['W_ch_1'], b = params['b_ch_1'], activation = 'relu', batch_norm = True)
+    c_3 = ConvPoolLayer(in_channels = 256, out_channels = 512, in_length = 38, batch_size = mb_size, kernel_len = 10, stride = 5, activation = "relu", batch_norm = False, W = params['W_c_3'], b = params['b_c_3'])
 
-    h_out_1 = DenseLayer((mb_size, num_hidden + num_latent), num_units = num_hidden, nonlinearity=None, W = params['W_disc_1'])
+    c_h_1 = HiddenLayer(num_in = 6 * 512, num_out = num_hidden, W = params['W_ch_1'], b = params['b_ch_1'], activation = 'relu', batch_norm = False)
 
-    h_out_2 = DenseLayer((mb_size, num_hidden), num_units = num_hidden, nonlinearity=None, W = params['W_disc_2'])
+    h_out_1 = HiddenLayer(num_in = num_hidden + num_latent, num_out = num_hidden, activation = 'relu', batch_norm = False, W = params['W_disc_1'], b = params['b_disc_1'])
 
-    h_out_3 = DenseLayer((mb_size, num_hidden), num_units = num_hidden, nonlinearity=None, W = params['W_disc_3'])
+    h_out_2 = HiddenLayer(num_in = num_hidden, num_out = num_hidden, activation = 'relu', batch_norm = False, W = params['W_disc_2'], b = params['b_disc_2'])
 
-    h_out_4 = DenseLayer((mb_size, 1), num_units = 1, nonlinearity=None, W = params['W_disc_4'], b = params['b_disc_4'])
+    h_out_3 = HiddenLayer(num_in = num_hidden, num_out = num_hidden, activation = 'relu', batch_norm = False, W = params['W_disc_3'], b = params['b_disc_3'])
 
-    c_1_value = T.specify_shape(c_1.output(x.reshape((128,1,4000))), (128,128,399))
+    h_out_4 = HiddenLayer(num_in = num_hidden, num_out = 1, activation = None, batch_norm = False, W = params['W_disc_4'], b = params['b_disc_4'])
+
+    c_1_value = T.specify_shape(c_1.output(dropout(x, 0.8).reshape((128,1,4000))), (128,128,399))
 
     c_2_value = T.specify_shape(c_2.output(c_1_value), (128,256,38))
 
@@ -128,19 +157,13 @@ def discriminator(x, z, params, mb_size, num_hidden, num_latent):
 
     c_h_1_value = c_h_1.output(c_3_value.flatten(2))
 
-    h_out_1_value = h_out_1.get_output_for(0.0 * T.sum(c_1_value) + T.concatenate([z, c_h_1_value], axis = 1))
+    h_out_1_value = dropout(h_out_1.output(T.concatenate([z, c_h_1_value], axis = 1)))
 
-    h_out_1_value = T.maximum(0.0, (h_out_1_value - T.mean(h_out_1_value, axis = 0)) / (1.0 + T.std(h_out_1_value, axis = 0)) + params['b_disc_1'])
+    h_out_2_value = dropout(h_out_2.output(h_out_1_value), 0.2)
 
-    h_out_2_value = h_out_2.get_output_for(h_out_1_value)
+    h_out_3_value = dropout(h_out_3.output(h_out_2_value), 0.2)
 
-    h_out_2_value = T.maximum(0.0, (h_out_2_value - T.mean(h_out_2_value, axis = 0)) / (1.0 + T.std(h_out_2_value, axis = 0)) + params['b_disc_2'])
-
-    h_out_3_value = h_out_3.get_output_for(h_out_2_value)
-
-    h_out_3_value = T.maximum(0.0, (h_out_3_value - T.mean(h_out_3_value, axis = 0)) / (1.0 + T.std(h_out_3_value, axis = 0)) + params['b_disc_3'])
-
-    h_out_4_value = h_out_4.get_output_for(h_out_3_value)
+    h_out_4_value = h_out_4.output(h_out_3_value)
 
     raw_y = h_out_4_value
 
@@ -160,11 +183,23 @@ def encoder(x, params, config):
     mb_size = config['mb_size']
     num_hidden = config['num_hidden']
 
-    h_out_1 = HiddenLayer(num_in = 4000, num_out = num_hidden, W = params['W_enc_1'], b = params['b_enc_1'], activation = 'relu', batch_norm = True)
+    c_1 = ConvPoolLayer(in_channels = 1, out_channels = 128, in_length = 4000, batch_size = mb_size, kernel_len = 20, stride = 10, activation = "relu", batch_norm = True, W = params['Wc_enc_1'], b = params['bc_enc_1'])
+
+    c_2 = ConvPoolLayer(in_channels = 128, out_channels = 256, in_length = 399, batch_size = mb_size, kernel_len = 20, stride = 10, activation = "relu", batch_norm = True, W = params['Wc_enc_2'], b = params['bc_enc_2'])
+
+    c_3 = ConvPoolLayer(in_channels = 256, out_channels = 512, in_length = 38, batch_size = mb_size, kernel_len = 10, stride = 5, activation = "relu", batch_norm = True, W = params['Wc_enc_3'], b = params['bc_enc_3'])
+
+    h_out_1 = HiddenLayer(num_in = 512 * 6, num_out = num_hidden, W = params['W_enc_1'], b = params['b_enc_1'], activation = 'relu', batch_norm = True)
 
     h_out_2 = HiddenLayer(num_in = num_hidden, num_out = num_hidden, W = params['W_enc_2'], b = params['b_enc_2'], activation = 'relu', batch_norm = True)
 
-    h_out_1_value = h_out_1.output(x)
+    print "x ndim", x.ndim
+
+    c_1_value = T.specify_shape(c_1.output(x.reshape((128,1,4000))), (128, 128, 399))
+    c_2_value = c_2.output(c_1_value)
+    c_3_value = c_3.output(c_2_value)
+
+    h_out_1_value = h_out_1.output(c_3_value.flatten(2))
     h_out_2_value = h_out_2.output(h_out_1_value)
 
     return {'h' : h_out_2_value}
@@ -183,15 +218,27 @@ def decoder(z, z_extra, params, config):
 
     h_out_2 = HiddenLayer(num_in = num_hidden, num_out = num_hidden, W = params['W_dec_2'], b = params['b_dec_2'], activation = 'relu', batch_norm = True)
 
-    h_out_3 = DenseLayer((mb_size, num_hidden), num_units = 4000, nonlinearity=None, W = params['W_dec_3'], b = params['b_dec_3'])
+    h_out_3 = HiddenLayer(num_in = num_hidden, num_out = 4096, activation = 'relu', W = params['W_dec_3'], b = params['b_dec_3'], batch_norm = True)
+
+    c1 = DeConvLayer(in_channels = 512, out_channels = 256, activation = 'relu', up_rate = 5, W = params['Wc_dec_1'], b = params['bc_dec_1'], batch_norm = True)
+
+    c2 = DeConvLayer(in_channels = 256, out_channels = 128, activation = 'relu', up_rate = 10, W = params['Wc_dec_2'], b = params['bc_dec_2'], batch_norm = False)
+
+    c3 = DeConvLayer(in_channels = 128, out_channels = 1, activation = None, up_rate = 10, W = params['Wc_dec_3'], b = params['bc_dec_3'], batch_norm = False)
 
     z = T.concatenate([z,z_extra], axis = 1)
 
     h_out_1_value = h_out_1.output(z)
     h_out_2_value = h_out_2.output(h_out_1_value)
-    h_out_3_value = h_out_3.get_output_for(h_out_2_value)
+    h_out_3_value = h_out_3.output(h_out_2_value)
 
-    return {'h' : h_out_3_value}
+    c1_o = c1.output(h_out_3_value.reshape((128,512,8,1)))
+    c2_o = c2.output(c1_o)
+    c3_o = c3.output(c2_o)
+
+    out = c3_o.reshape((128,4000))
+
+    return {'h' : out}
 
 '''
 Given x (unormalized), returns a reconstructed_x and a sampled x (both unnormalized)
@@ -215,7 +262,7 @@ def define_network(x, params, config):
     srng = theano.tensor.shared_randomstreams.RandomStreams(420)
 
     z_sampled = srng.normal(size = mean.shape, avg = 0.0, std = 1.0)
-    z_extra = srng.normal(size = mean.shape, avg = 0.0, std = 1.0)
+    z_extra = 0.0 * srng.normal(size = mean.shape, avg = 0.0, std = 1.0)
 
     z_reconstruction = mean
 
@@ -245,8 +292,8 @@ if __name__ == "__main__":
 
     config = {}
     config['mb_size'] = 128
-    config['num_hidden'] = 4096
-    config['num_latent'] = 4096
+    config['num_hidden'] = 2048
+    config['num_latent'] = 2048
 
     d = Data(mb_size = config['mb_size'], seq_length = 4000)
 
@@ -276,7 +323,7 @@ if __name__ == "__main__":
 
     bce = T.nnet.binary_crossentropy
 
-    LD_dD = bce(disc_real_D['c'], 0.99 * T.ones(disc_real_D['c'].shape)).mean() + bce(disc_fake_D['c'], 0.01 + T.zeros(disc_fake_D['c'].shape)).mean()
+    LD_dD = bce(disc_real_D['c'], 0.999 * T.ones(disc_real_D['c'].shape)).mean() + bce(disc_fake_D['c'], 0.0001 + T.zeros(disc_fake_D['c'].shape)).mean()
     LD_dG = bce(disc_fake_G['c'], T.ones(disc_fake_G['c'].shape)).mean()
 
     vae_loss = results_map['z_loss']
@@ -293,14 +340,16 @@ if __name__ == "__main__":
     print "params dec", params_dec.keys()
     print "params_disc", params_disc.keys()
 
-    updates = lasagne.updates.adam(LD_dG, params_dec.values(), learning_rate = 0.0001, beta1 = 0.5)
+    updates = lasagne.updates.adam(LD_dG, params_dec.values(), learning_rate = 0.001, beta1 = 0.5)
     updates_disc = lasagne.updates.adam(LD_dD + vae_loss * 0.0001, params_disc.values() + params_enc.values(), learning_rate = 0.0001, beta1 = 0.5)
+
 
     train_method = theano.function(inputs = inputs, outputs = outputs, updates = updates)
     disc_method = theano.function(inputs = inputs, outputs = outputs, updates = updates_disc)
     #gen_method = theano.function(inputs = inputs, outputs = outputs, updates = updates_gen)
 
     last_acc = 0.0
+    score_diff = 0.0
 
     for i in range(0,10000000):
         x = d.getBatch()
@@ -333,6 +382,7 @@ if __name__ == "__main__":
             print "classification", res['c_real'][:20].tolist()
             print res['c_fake'][:20].tolist()
             print "real", res['c_real'].mean(), "fake", res['c_fake'].mean()
+            score_diff = res['c_real'].mean() - res['c_fake'].mean()
             #print res['classification'].tolist()
 
 
